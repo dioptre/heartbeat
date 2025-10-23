@@ -209,7 +209,7 @@ Edit these in `heartbeat_led.py` to tune performance:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `PWM_FREQ` | 10000 Hz | PWM frequency (flicker-free) |
-| `MAX_BRIGHTNESS` | 83% | Maximum duty cycle (83% = ~10V from 12V supply) |
+| `MAX_BRIGHTNESS` | 97.5% | Maximum duty cycle (97.5% = ~11.7V from 12V supply) |
 | `CHUNK_SIZE` | 1024 samples | Audio chunk size (~23ms latency) |
 | `SMOOTHING_FACTOR` | 0.7 | 0-1, higher = smoother response |
 | `BEAT_THRESHOLD` | 1.5 | Multiplier above average for beat detection |

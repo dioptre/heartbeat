@@ -70,7 +70,7 @@ LED_2_PIN = 19  # GPIO 19 - Right/Secondary COB - PWM1_CHAN2 on Pi 5, PWM1 on Pi
 
 # PWM settings
 PWM_FREQ = 10000  # 10kHz - flicker-free, above audible range
-MAX_BRIGHTNESS = 83  # 0-100% duty cycle (83% = ~10V from 12V supply)
+MAX_BRIGHTNESS = 97.5  # 0-100% duty cycle (97.5% = ~11.7V from 12V supply)
 MIN_BRIGHTNESS = 0
 
 # Audio analysis settings
@@ -79,9 +79,9 @@ CHUNK_SIZE = 1024  # Smaller = lower latency (~23ms)
 SMOOTHING_FACTOR = 0.7  # 0-1, higher = smoother but slower response
 
 # Heartbeat detection
-BEAT_THRESHOLD = 1.5  # Multiplier above average for beat detection
-BEAT_DECAY = 0.95  # How fast brightness decays after beat
-MIN_BEAT_INTERVAL = 0.3  # Minimum seconds between beats (max 200 BPM)
+BEAT_THRESHOLD = 1.15  # Multiplier above average for beat detection (very sensitive)
+BEAT_DECAY = 0.88  # How fast brightness decays after beat (faster for more visible beats)
+MIN_BEAT_INTERVAL = 0.25  # Minimum seconds between beats (max 240 BPM)
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -191,66 +191,106 @@ class AudioReactiveController:
         """
         # Convert to numpy array
         audio_array = np.frombuffer(audio_data, dtype=np.int16)
-        
-        # Calculate RMS energy
-        rms = np.sqrt(np.mean(audio_array**2))
-        
-        # Normalize (typical 16-bit audio range)
-        normalized_energy = min(rms / 5000.0, 1.0)
-        
+
+        if len(audio_array) == 0:
+            return 0.0
+
+        # Calculate RMS energy with safety checks
+        audio_float = audio_array.astype(np.float64)  # Convert to float to avoid overflow
+        mean_square = np.mean(audio_float ** 2)
+
+        if mean_square < 0 or np.isnan(mean_square):
+            return self.smoothed_energy
+
+        rms = np.sqrt(mean_square)
+
+        # Normalize (typical 16-bit audio range is ±32768, so RMS max is ~23170)
+        normalized_energy = min(rms / 10000.0, 1.0)
+        normalized_energy = max(0.0, normalized_energy)  # Ensure non-negative
+
         # Apply smoothing
-        self.smoothed_energy = (SMOOTHING_FACTOR * self.smoothed_energy + 
+        self.smoothed_energy = (SMOOTHING_FACTOR * self.smoothed_energy +
                                 (1 - SMOOTHING_FACTOR) * normalized_energy)
-        
+
         return self.smoothed_energy
     
     def detect_beat(self, energy):
         """
         Detect if current energy represents a beat/heartbeat
+        Uses adaptive threshold based on recent energy history
         """
         current_time = time.time()
-        
+
         # Update energy history (keep last 50 samples)
         self.energy_history.append(energy)
         if len(self.energy_history) > 50:
             self.energy_history.pop(0)
-        
-        # Calculate average energy
-        avg_energy = np.mean(self.energy_history) if self.energy_history else 0
-        
-        # Beat detected if:
-        # 1. Energy exceeds threshold
-        # 2. Enough time passed since last beat
-        is_beat = (energy > avg_energy * BEAT_THRESHOLD and 
-                   current_time - self.last_beat_time > MIN_BEAT_INTERVAL)
-        
+
+        # Use median instead of mean for more robust detection
+        if len(self.energy_history) > 10:
+            median_energy = np.median(self.energy_history)
+
+            # Beat detected if:
+            # 1. Energy significantly exceeds recent median
+            # 2. Enough time passed since last beat
+            # 3. Energy is above 70% of the known maximum (if analyzed)
+            threshold_met = energy > median_energy * BEAT_THRESHOLD
+
+            if hasattr(self, 'audio_max_energy'):
+                # Also require energy to be in upper range
+                threshold_met = threshold_met and (energy > self.audio_max_energy * 0.5)
+
+            is_beat = (threshold_met and
+                      current_time - self.last_beat_time > MIN_BEAT_INTERVAL)
+        else:
+            is_beat = False
+
         if is_beat:
             self.last_beat_time = current_time
-            
+
         return is_beat
     
     def update_leds(self, energy, is_beat):
         """
         Update LED brightness based on energy and beat detection
+        Maps actual audio energy range to LED brightness range (40-97%)
         """
-        if is_beat:
-            # Beat detected - flash both LEDs
-            self.brightness_1 = 100.0
-            self.brightness_2 = 100.0
+        HEARTBEAT_MIN = 40  # Minimum brightness during heartbeat (avoids flicker)
+        HEARTBEAT_MAX = 97  # Maximum brightness during heartbeat (97% = 11.64V)
+
+        # Map the audio energy from its actual range to our LED brightness range
+        if hasattr(self, 'audio_min_energy') and hasattr(self, 'audio_max_energy'):
+            # Normalize energy to 0-1 based on actual audio range
+            audio_range = self.audio_max_energy - self.audio_min_energy
+            if audio_range > 0:
+                normalized = (energy - self.audio_min_energy) / audio_range
+                normalized = max(0, min(1, normalized))  # Clamp to 0-1
+            else:
+                normalized = 0.5
+
+            # Map to LED brightness range
+            mapped_brightness = HEARTBEAT_MIN + normalized * (HEARTBEAT_MAX - HEARTBEAT_MIN)
         else:
-            # Decay brightness and add baseline energy response
+            # Fallback if audio hasn't been analyzed yet
+            mapped_brightness = HEARTBEAT_MIN + energy * (HEARTBEAT_MAX - HEARTBEAT_MIN)
+
+        if is_beat:
+            # Beat detected - flash both LEDs to maximum
+            self.brightness_1 = HEARTBEAT_MAX
+            self.brightness_2 = HEARTBEAT_MAX
+        else:
+            # Decay brightness
             self.brightness_1 *= BEAT_DECAY
             self.brightness_2 *= BEAT_DECAY
-            
-            # Add continuous energy-reactive component
-            baseline = energy * 30  # 0-30% based on continuous audio
-            self.brightness_1 = max(self.brightness_1, baseline)
-            self.brightness_2 = max(self.brightness_2, baseline)
-        
-        # Clamp values
-        self.brightness_1 = max(MIN_BRIGHTNESS, min(MAX_BRIGHTNESS, self.brightness_1))
-        self.brightness_2 = max(MIN_BRIGHTNESS, min(MAX_BRIGHTNESS, self.brightness_2))
-        
+
+            # Use the mapped brightness as baseline
+            self.brightness_1 = max(self.brightness_1, mapped_brightness)
+            self.brightness_2 = max(self.brightness_2, mapped_brightness)
+
+        # Clamp values to our safe range
+        self.brightness_1 = max(HEARTBEAT_MIN, min(HEARTBEAT_MAX, self.brightness_1))
+        self.brightness_2 = max(HEARTBEAT_MIN, min(HEARTBEAT_MAX, self.brightness_2))
+
         # Update PWM
         self.pwm1.ChangeDutyCycle(self.brightness_1)
         self.pwm2.ChangeDutyCycle(self.brightness_2)
@@ -275,6 +315,33 @@ class AudioReactiveController:
 
         print(f"✓ Duration: {len(audio)/1000:.1f}s")
         print(f"✓ Sample rate: {audio.frame_rate}Hz")
+
+        # Pre-analyze audio to find peak and minimum energy levels
+        print(f"🔍 Analyzing audio for dynamic range...")
+        bytes_per_chunk = CHUNK_SIZE * 2  # 16-bit = 2 bytes per sample
+        energies = []
+
+        for i in range(0, len(raw_data), bytes_per_chunk):
+            chunk = raw_data[i:i+bytes_per_chunk]
+            if len(chunk) < bytes_per_chunk:
+                break
+
+            # Calculate RMS energy for this chunk
+            audio_array = np.frombuffer(chunk, dtype=np.int16)
+            if len(audio_array) > 0:
+                audio_float = audio_array.astype(np.float64)
+                mean_square = np.mean(audio_float ** 2)
+                if mean_square >= 0 and not np.isnan(mean_square):
+                    rms = np.sqrt(mean_square)
+                    normalized_energy = min(rms / 10000.0, 1.0)
+                    energies.append(normalized_energy)
+
+        # Find peak and minimum energy (using percentiles to avoid outliers)
+        self.audio_min_energy = np.percentile(energies, 5)   # 5th percentile
+        self.audio_max_energy = np.percentile(energies, 95)  # 95th percentile
+
+        print(f"✓ Audio range: {self.audio_min_energy:.3f} to {self.audio_max_energy:.3f}")
+        print(f"✓ Will map to LED range: 40% to 97%")
         print(f"✓ Starting audio-reactive control...")
         print(f"  - Chunk size: {CHUNK_SIZE} samples (~{CHUNK_SIZE/SAMPLE_RATE*1000:.1f}ms latency)")
         print(f"  - Beat threshold: {BEAT_THRESHOLD}x average")
@@ -315,9 +382,15 @@ class AudioReactiveController:
                     # Update LEDs
                     self.update_leds(energy, is_beat)
 
-                    # Debug output
+                    # Debug output - show every 50th frame or if beat detected
                     if is_beat:
-                        print(f"💓 BEAT! Energy: {energy:.2f} | LED1: {self.brightness_1:.0f}% LED2: {self.brightness_2:.0f}%")
+                        print(f"💓 BEAT! Energy: {energy:.3f} | Brightness: {self.brightness_1:.0f}%")
+                    elif i % (bytes_per_chunk * 50) == 0:
+                        # Show status every ~1 second
+                        median = np.median(self.energy_history) if len(self.energy_history) > 0 else 0
+                        threshold = median * BEAT_THRESHOLD
+                        max_e = self.audio_max_energy if hasattr(self, 'audio_max_energy') else 1.0
+                        print(f"   Energy: {energy:.3f} | Median: {median:.3f} | Threshold: {threshold:.3f} | Max: {max_e:.3f} | Brightness: {self.brightness_1:.0f}%")
 
                     # Timing sync (simulate real-time playback)
                     time.sleep(CHUNK_SIZE / SAMPLE_RATE)
@@ -345,12 +418,18 @@ class AudioReactiveController:
         Run a test pattern to verify hardware
         """
         print("\n🔧 Running hardware test pattern...\n")
+
+        # Try to set higher process priority for smoother animation
+        try:
+            os.nice(-10)  # Increase priority (requires sudo or proper permissions)
+        except:
+            pass  # Silently fail if we don't have permission
         
         patterns = [
-            ("Full brightness (both)", 100, 100, 2),
-            ("LED 1 only", 100, 0, 1),
-            ("LED 2 only", 0, 100, 1),
-            ("50% brightness", 50, 50, 1),
+            ("Full brightness (both)", MAX_BRIGHTNESS, MAX_BRIGHTNESS, 2),
+            ("LED 1 only", MAX_BRIGHTNESS, 0, 1),
+            ("LED 2 only", 0, MAX_BRIGHTNESS, 1),
+            ("50% brightness", MAX_BRIGHTNESS/2, MAX_BRIGHTNESS/2, 1),
             ("Slow pulse", None, None, 5),
         ]
         
@@ -358,11 +437,42 @@ class AudioReactiveController:
             print(f"  {name}...")
             
             if b1 is None:  # Pulse pattern
-                for i in range(50):
-                    brightness = (np.sin(i * 0.2) + 1) * 50
-                    self.pwm1.ChangeDutyCycle(brightness)
-                    self.pwm2.ChangeDutyCycle(brightness)
-                    time.sleep(0.1)
+                # Smooth pulse: more steps, shorter delay, respects MAX_BRIGHTNESS
+                # Use raised sine wave to avoid going too dim
+                import gc
+
+                steps = 500  # More steps for smoother animation
+                min_pulse_brightness = 40  # 40% minimum brightness to avoid flicker
+                max_pulse_brightness = MAX_BRIGHTNESS  # 97.5% maximum
+
+                # Pre-calculate ALL brightness values to avoid computation in loop
+                brightnesses = []
+                for i in range(steps):
+                    sine_value = (np.sin(i * 2 * np.pi / steps) + 1) / 2
+                    brightness = min_pulse_brightness + sine_value * (max_pulse_brightness - min_pulse_brightness)
+                    brightness = max(MIN_BRIGHTNESS, min(MAX_BRIGHTNESS, brightness))
+                    brightnesses.append(brightness)
+
+                # Disable garbage collection during animation to prevent stutters
+                gc.disable()
+
+                try:
+                    start_time = time.time()
+                    step_duration = duration / steps
+
+                    for i, brightness in enumerate(brightnesses):
+                        # Update PWM
+                        self.pwm1.ChangeDutyCycle(brightness)
+                        self.pwm2.ChangeDutyCycle(brightness)
+
+                        # Precise timing: calculate how long to sleep based on actual elapsed time
+                        target_time = start_time + (i + 1) * step_duration
+                        sleep_time = target_time - time.time()
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
+                finally:
+                    # Re-enable garbage collection
+                    gc.enable()
             else:
                 self.pwm1.ChangeDutyCycle(b1)
                 self.pwm2.ChangeDutyCycle(b2)
@@ -378,9 +488,18 @@ class AudioReactiveController:
         Clean up GPIO
         """
         self.running = False
-        self.pwm1.stop()
-        self.pwm2.stop()
-        GPIO.cleanup()
+        try:
+            self.pwm1.stop()
+        except:
+            pass
+        try:
+            self.pwm2.stop()
+        except:
+            pass
+        try:
+            GPIO.cleanup()
+        except:
+            pass
         print("\n✓ GPIO cleaned up")
 
 
