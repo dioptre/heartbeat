@@ -1,4 +1,4 @@
-.PHONY: help install install-system install-python setup-pi5 setup-gpio test run loop clean stop
+.PHONY: help install install-system install-python setup-pi5 setup-gpio test run loop clean stop service-install service-start service-stop service-status service-enable service-disable service-logs service-uninstall
 
 # Use bash as the shell
 SHELL := /bin/bash
@@ -18,6 +18,16 @@ help:
 	@echo "  make loop           - Run with heartbeat.mp3 (repeats forever)"
 	@echo "  make stop           - Stop running heartbeat"
 	@echo "  make clean          - Clean up Python cache and build files"
+	@echo ""
+	@echo "Systemd Service Commands:"
+	@echo "  make service-install - Install systemd service"
+	@echo "  make service-enable  - Enable service to start on boot"
+	@echo "  make service-start   - Start the service now"
+	@echo "  make service-stop    - Stop the service"
+	@echo "  make service-status  - Check service status"
+	@echo "  make service-logs    - View service logs"
+	@echo "  make service-disable - Disable auto-start on boot"
+	@echo "  make service-uninstall - Uninstall the service"
 	@echo ""
 
 # =============================================================================
@@ -183,3 +193,65 @@ clean:
 	find . -type d -name "build" -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name "dist" -exec rm -rf {} + 2>/dev/null || true
 	@echo "✓ Cleaned up"
+
+# =============================================================================
+# SYSTEMD SERVICE MANAGEMENT
+# =============================================================================
+
+service-install:
+	@echo "Installing heartbeat systemd service..."
+	sudo cp heartbeat.service /etc/systemd/system/
+	sudo systemctl daemon-reload
+	@echo "✓ Service installed"
+	@echo ""
+	@echo "Next steps:"
+	@echo "  make service-enable  - Enable auto-start on boot"
+	@echo "  make service-start   - Start the service now"
+	@echo ""
+
+service-enable:
+	@echo "Enabling heartbeat service to start on boot..."
+	sudo systemctl enable heartbeat.service
+	@echo "✓ Service enabled"
+	@echo "Heartbeat will start automatically on next boot"
+
+service-disable:
+	@echo "Disabling heartbeat service auto-start..."
+	sudo systemctl disable heartbeat.service
+	@echo "✓ Service disabled"
+
+service-start:
+	@echo "Starting heartbeat service..."
+	sudo systemctl start heartbeat.service
+	@echo "✓ Service started"
+	@echo "Check status with: make service-status"
+	@echo "View logs with: make service-logs"
+
+service-stop:
+	@echo "Stopping heartbeat service..."
+	sudo systemctl stop heartbeat.service
+	@echo "✓ Service stopped"
+
+service-restart:
+	@echo "Restarting heartbeat service..."
+	sudo systemctl restart heartbeat.service
+	@echo "✓ Service restarted"
+
+service-status:
+	@sudo systemctl status heartbeat.service --no-pager
+
+service-logs:
+	@echo "Showing heartbeat service logs (Ctrl+C to exit)..."
+	sudo journalctl -u heartbeat.service -f
+
+service-logs-recent:
+	@echo "Showing recent heartbeat service logs..."
+	sudo journalctl -u heartbeat.service -n 50 --no-pager
+
+service-uninstall:
+	@echo "Uninstalling heartbeat service..."
+	@sudo systemctl stop heartbeat.service 2>/dev/null || true
+	@sudo systemctl disable heartbeat.service 2>/dev/null || true
+	@sudo rm -f /etc/systemd/system/heartbeat.service
+	@sudo systemctl daemon-reload
+	@echo "✓ Service uninstalled"

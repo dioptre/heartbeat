@@ -1,0 +1,23 @@
+[Unit]
+Description=Heartbeat Audio-Reactive LED Controller
+After=network.target sound.target bluetooth.target pulseaudio.service
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=a
+Group=a
+WorkingDirectory=/home/a/heartbeat
+Environment="PATH=/home/a/heartbeat/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PULSE_RUNTIME_PATH=/run/user/1000/pulse/"
+ExecStart=/home/a/heartbeat/.venv/bin/python3 /home/a/heartbeat/src/heartbeat.py /home/a/heartbeat/heartbeat.mp3 --loop
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Make sure we have access to audio and GPIO
+SupplementaryGroups=audio video gpio bluetooth pulse-access
+
+[Install]
+WantedBy=multi-user.target
