@@ -1,4 +1,4 @@
-.PHONY: help install install-system install-python setup-pi5 setup-gpio test run loop clean stop service-install service-start service-stop service-status service-enable service-disable service-logs service-uninstall
+.PHONY: help install install-system install-python setup-pi5 setup-gpio setup-audio-aux test run loop clean stop service-install service-start service-stop service-status service-enable service-disable service-logs service-uninstall
 
 # Use bash as the shell
 SHELL := /bin/bash
@@ -13,6 +13,7 @@ help:
 	@echo "  make install-python  - Install Python dependencies only"
 	@echo "  make setup-pi5       - Setup Raspberry Pi 5 PWM configuration"
 	@echo "  make setup-gpio      - Setup GPIO permissions (run without sudo)"
+	@echo "  make setup-audio-aux - Set audio output to 3.5mm AUX jack (Pi 4)"
 	@echo "  make test           - Run hardware test pattern"
 	@echo "  make run            - Run with heartbeat.mp3 (plays once)"
 	@echo "  make loop           - Run with heartbeat.mp3 (repeats forever)"
@@ -118,6 +119,22 @@ setup-pi5:
 	@echo ""
 	@echo "⚠️  REBOOT REQUIRED"
 	@echo "Run: sudo reboot"
+	@echo ""
+
+# =============================================================================
+# AUDIO OUTPUT SETUP (Pi 4)
+# =============================================================================
+# Sets audio output to 3.5mm AUX jack using amixer (ALSA)
+# This is the fastest method with no dependencies on PulseAudio/PipeWire
+# Values: 0=auto, 1=headphone jack, 2=HDMI
+# =============================================================================
+
+setup-audio-aux:
+	@echo "Setting audio output to 3.5mm AUX jack..."
+	amixer cset numid=3 1
+	@echo "✓ Audio output set to headphone jack"
+	@echo ""
+	@echo "Test with: speaker-test -t sine -f 440 -l 1"
 	@echo ""
 
 # =============================================================================
