@@ -1,4 +1,7 @@
-.PHONY: help install install-system install-python setup-pi5 test clean
+.PHONY: help install install-system install-python setup-pi5 test run loop clean stop
+
+# Use bash as the shell
+SHELL := /bin/bash
 
 # Default target
 help:
@@ -10,7 +13,9 @@ help:
 	@echo "  make install-python  - Install Python dependencies only"
 	@echo "  make setup-pi5       - Setup Raspberry Pi 5 PWM configuration"
 	@echo "  make test           - Run hardware test pattern"
-	@echo "  make run            - Run with heartbeat.mp3"
+	@echo "  make run            - Run with heartbeat.mp3 (plays once)"
+	@echo "  make loop           - Run with heartbeat.mp3 (repeats forever)"
+	@echo "  make stop           - Stop running heartbeat"
 	@echo "  make clean          - Clean up Python cache and build files"
 	@echo ""
 
@@ -118,6 +123,19 @@ run:
 		exit 1; \
 	fi
 	source .venv/bin/activate && python3 src/heartbeat.py heartbeat.mp3
+
+loop:
+	@if [ ! -f "heartbeat.mp3" ]; then \
+		echo "❌ Error: heartbeat.mp3 not found"; \
+		exit 1; \
+	fi
+	@echo "Starting heartbeat in loop mode (repeats forever)..."
+	@echo "Press Ctrl+C to stop, or run 'make stop' from another terminal"
+	source .venv/bin/activate && python3 src/heartbeat.py heartbeat.mp3 --loop
+
+stop:
+	@echo "Stopping heartbeat..."
+	@pkill -f "heartbeat.py" && echo "✓ Stopped" || echo "No heartbeat process found"
 
 # =============================================================================
 # CLEANUP

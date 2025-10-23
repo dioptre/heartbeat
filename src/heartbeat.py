@@ -70,7 +70,7 @@ LED_2_PIN = 19  # GPIO 19 - Right/Secondary COB - PWM1_CHAN2 on Pi 5, PWM1 on Pi
 
 # PWM settings
 PWM_FREQ = 10000  # 10kHz - flicker-free, above audible range
-MAX_BRIGHTNESS = 100  # 0-100%
+MAX_BRIGHTNESS = 83  # 0-100% duty cycle (83% = ~10V from 12V supply)
 MIN_BRIGHTNESS = 0
 
 # Audio analysis settings
@@ -255,64 +255,80 @@ class AudioReactiveController:
         self.pwm1.ChangeDutyCycle(self.brightness_1)
         self.pwm2.ChangeDutyCycle(self.brightness_2)
     
-    def process_mp3_file(self, mp3_path):
+    def process_mp3_file(self, mp3_path, loop=False):
         """
         Load and process MP3 file for audio-reactive control
+        Args:
+            mp3_path: Path to MP3 file
+            loop: If True, repeat audio forever
         """
         print(f"\n🎵 Loading: {mp3_path}")
-        
+
         # Load MP3
         audio = AudioSegment.from_mp3(mp3_path)
-        
+
         # Convert to mono, 44.1kHz
         audio = audio.set_channels(1).set_frame_rate(SAMPLE_RATE)
-        
+
         # Get raw audio data
         raw_data = audio.raw_data
-        
+
         print(f"✓ Duration: {len(audio)/1000:.1f}s")
         print(f"✓ Sample rate: {audio.frame_rate}Hz")
         print(f"✓ Starting audio-reactive control...")
         print(f"  - Chunk size: {CHUNK_SIZE} samples (~{CHUNK_SIZE/SAMPLE_RATE*1000:.1f}ms latency)")
         print(f"  - Beat threshold: {BEAT_THRESHOLD}x average")
+        if loop:
+            print(f"  - Loop mode: ENABLED (will repeat forever)")
         print("\nPress Ctrl+C to stop\n")
-        
-        # Start playback in separate thread
-        playback_thread = threading.Thread(target=lambda: play(audio))
-        playback_thread.daemon = True
-        playback_thread.start()
-        
+
         # Process audio in chunks
         self.running = True
         bytes_per_chunk = CHUNK_SIZE * 2  # 16-bit = 2 bytes per sample
-        
+
         try:
-            for i in range(0, len(raw_data), bytes_per_chunk):
-                if not self.running:
+            loop_count = 0
+            while True:
+                # Start playback in separate thread for this loop iteration
+                playback_thread = threading.Thread(target=lambda: play(audio))
+                playback_thread.daemon = True
+                playback_thread.start()
+
+                if loop:
+                    loop_count += 1
+                    if loop_count > 1:
+                        print(f"\n🔄 Loop #{loop_count} starting...")
+
+                for i in range(0, len(raw_data), bytes_per_chunk):
+                    if not self.running:
+                        break
+
+                    chunk = raw_data[i:i+bytes_per_chunk]
+
+                    if len(chunk) < bytes_per_chunk:
+                        break
+
+                    # Analyze audio
+                    energy = self.analyze_audio_chunk(chunk)
+                    is_beat = self.detect_beat(energy)
+
+                    # Update LEDs
+                    self.update_leds(energy, is_beat)
+
+                    # Debug output
+                    if is_beat:
+                        print(f"💓 BEAT! Energy: {energy:.2f} | LED1: {self.brightness_1:.0f}% LED2: {self.brightness_2:.0f}%")
+
+                    # Timing sync (simulate real-time playback)
+                    time.sleep(CHUNK_SIZE / SAMPLE_RATE)
+
+                # Wait for playback to finish
+                playback_thread.join()
+
+                # If not looping, break after one playthrough
+                if not loop or not self.running:
                     break
-                
-                chunk = raw_data[i:i+bytes_per_chunk]
-                
-                if len(chunk) < bytes_per_chunk:
-                    break
-                
-                # Analyze audio
-                energy = self.analyze_audio_chunk(chunk)
-                is_beat = self.detect_beat(energy)
-                
-                # Update LEDs
-                self.update_leds(energy, is_beat)
-                
-                # Debug output
-                if is_beat:
-                    print(f"💓 BEAT! Energy: {energy:.2f} | LED1: {self.brightness_1:.0f}% LED2: {self.brightness_2:.0f}%")
-                
-                # Timing sync (simulate real-time playback)
-                time.sleep(CHUNK_SIZE / SAMPLE_RATE)
-            
-            # Wait for playback to finish
-            playback_thread.join()
-            
+
         except KeyboardInterrupt:
             print("\n\n⏹  Stopped by user")
         
@@ -385,16 +401,28 @@ def main():
         import sys
         
         if len(sys.argv) > 1:
-            mp3_path = sys.argv[1]
-            
+            arg = sys.argv[1]
+
+            # Check if test pattern requested
+            if arg.lower() == 'test':
+                controller.test_pattern()
+                return
+
+            # Check for loop flag
+            loop_mode = '--loop' in sys.argv or '-l' in sys.argv
+
+            # Otherwise treat as MP3 file path
+            mp3_path = arg
             if not Path(mp3_path).exists():
                 print(f"❌ Error: File not found: {mp3_path}")
                 return
-            
-            controller.process_mp3_file(mp3_path)
+
+            controller.process_mp3_file(mp3_path, loop=loop_mode)
         else:
             print("\nUsage:")
-            print("  python3 heartbeat_led.py <mp3_file>")
+            print("  python3 heartbeat_led.py <mp3_file> [--loop]")
+            print("\nOptions:")
+            print("  --loop, -l    Repeat audio forever")
             print("\nOr run test pattern:")
             print("  python3 heartbeat_led.py test")
             print()
