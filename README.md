@@ -2,6 +2,21 @@
 
 Real-time audio-reactive lighting using Raspberry Pi and high-power COB LEDs. Detects and responds to heartbeat sounds in MP3 files with <25ms latency for instant visual feedback.
 
+## Quick Start
+
+**For Raspberry Pi 5 users (one-time setup):**
+```bash
+sudo bash setup_pi5.sh
+sudo reboot
+```
+
+**For all Raspberry Pi versions:**
+```bash
+python3 src/heartbeat.py heartbeat.mp3
+```
+
+---
+
 ## Overview
 
 This project uses a Raspberry Pi to control two 70W COB LED panels that pulse and react to audio, specifically designed for heartbeat sounds. The LEDs dim in and out in sync with the audio, flashing bright on detected beats and maintaining a subtle glow during quieter moments.
@@ -101,6 +116,24 @@ MOSFET Connections:
 - **GPIO 19** (Physical pin 35): COB #2 - Hardware PWM1
 - **GND**: Common ground between Pi and power supply
 
+### Raspberry Pi 5 Support
+
+This project works on both **Raspberry Pi 4** and **Raspberry Pi 5**!
+
+**For Raspberry Pi 5 users:**
+- The code automatically detects your Pi version
+- GPIO pins remain the same (GPIO 18 and 19)
+- **One-time setup required:**
+  ```bash
+  sudo bash setup_pi5.sh
+  sudo reboot
+  ```
+- This adds `dtoverlay=pwm-2chan` to your config file
+
+**Technical differences:**
+- **Pi 4 and earlier**: Uses PWM channels 0 and 1
+- **Pi 5**: Uses PWM channels 2 and 3 (handled automatically by the code)
+
 ---
 
 ## Why This Design Works
@@ -136,8 +169,19 @@ sudo apt-get update
 sudo apt-get install python3-pip python3-pyaudio ffmpeg
 
 # Install Python packages
-pip3 install pydub numpy RPi.GPIO
+pip3 install pydub numpy
+
+# Install GPIO library (Pi 5 compatible)
+# For Raspberry Pi 5, use rpi-lgpio (drop-in replacement for RPi.GPIO):
+pip3 install rpi-lgpio
+
+# For Raspberry Pi 4 and earlier, you can use either:
+pip3 install RPi.GPIO
+# OR
+pip3 install rpi-lgpio  # Works on all Pi versions
 ```
+
+**Note:** `rpi-lgpio` is recommended as it works on **all Raspberry Pi versions** (Pi 3, 4, and 5). The original `RPi.GPIO` library does not work on Pi 5 due to hardware changes.
 
 ### Configuration Parameters
 

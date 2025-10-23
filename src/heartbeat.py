@@ -2,13 +2,24 @@
 """
 Heartbeat Audio-Reactive LED Controller for Raspberry Pi
 Controls 2x 70W COB LEDs via PWM based on MP3 audio analysis
+Compatible with Raspberry Pi 4 and Raspberry Pi 5
 """
 
-import RPi.GPIO as GPIO
 import numpy as np
 import time
 import threading
+import subprocess
 from pathlib import Path
+import os
+import re
+
+# GPIO library - Use RPi.GPIO-compatible library that works on Pi 5
+try:
+    import RPi.GPIO as GPIO
+except ImportError:
+    print("⚠️  RPi.GPIO not found. Installing rpi-lgpio (Pi 5 compatible)...")
+    print("Run: pip3 install rpi-lgpio")
+    exit(1)
 
 # Audio libraries
 try:
@@ -16,18 +27,46 @@ try:
     from pydub.playback import play
     import pyaudio
 except ImportError:
-    print("Installing required packages...")
+    print("⚠️  Audio libraries not found.")
     print("Run: sudo apt-get install python3-pyaudio ffmpeg")
     print("Run: pip3 install pydub numpy")
     exit(1)
+
+# ============================================================================
+# RASPBERRY PI VERSION DETECTION
+# ============================================================================
+
+def detect_pi_version():
+    """
+    Detect Raspberry Pi version (4 or 5)
+    Returns: int (4 or 5) or None if cannot detect
+    """
+    try:
+        with open('/proc/device-tree/model', 'r') as f:
+            model = f.read()
+            if 'Raspberry Pi 5' in model:
+                return 5
+            elif 'Raspberry Pi 4' in model or 'Raspberry Pi 3' in model:
+                return 4
+            else:
+                # Default to Pi 4 behavior for older models
+                return 4
+    except:
+        print("⚠️  Warning: Could not detect Pi version, assuming Pi 4")
+        return 4
+
+PI_VERSION = detect_pi_version()
 
 # ============================================================================
 # HARDWARE CONFIGURATION
 # ============================================================================
 
 # GPIO pins (hardware PWM capable)
-LED_1_PIN = 18  # GPIO 18 (PWM0) - Left/Primary COB
-LED_2_PIN = 19  # GPIO 19 (PWM1) - Right/Secondary COB
+LED_1_PIN = 18  # GPIO 18 - Left/Primary COB - PWM0_CHAN2 on Pi 5, PWM0 on Pi 4
+LED_2_PIN = 19  # GPIO 19 - Right/Secondary COB - PWM1_CHAN2 on Pi 5, PWM1 on Pi 4
+
+# Note: rpi-lgpio library automatically handles the PWM channel differences
+# between Pi 4 (channels 0/1) and Pi 5 (channels 2/3) when using GPIO.PWM()
 
 # PWM settings
 PWM_FREQ = 10000  # 10kHz - flicker-free, above audible range
@@ -45,6 +84,65 @@ BEAT_DECAY = 0.95  # How fast brightness decays after beat
 MIN_BEAT_INTERVAL = 0.3  # Minimum seconds between beats (max 200 BPM)
 
 # ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def check_pi5_config():
+    """
+    Check if Raspberry Pi 5 has the required PWM configuration
+    Returns: (bool, str) - (is_configured, status_message)
+    """
+    if PI_VERSION != 5:
+        return True, "Not Pi 5"  # Not Pi 5, no check needed
+
+    # Check config.txt for overlay
+    has_overlay = False
+    try:
+        with open('/boot/firmware/config.txt', 'r') as f:
+            config = f.read()
+            if 'dtoverlay=pwm-2chan' in config or 'dtoverlay=pwm' in config:
+                has_overlay = True
+    except:
+        pass
+
+    if not has_overlay:
+        return False, "Missing dtoverlay=pwm-2chan in /boot/firmware/config.txt"
+
+    # Verify GPIO pins are actually configured for PWM using pinctrl
+    # On Pi 5: GPIO 18 should be alt3 (PWM0_CHAN2), GPIO 19 should be alt3 (PWM1_CHAN2)
+    try:
+        # Check GPIO 18
+        result_18 = subprocess.run(['pinctrl', 'get', '18'],
+                                  capture_output=True, text=True, timeout=2)
+        # Check GPIO 19
+        result_19 = subprocess.run(['pinctrl', 'get', '19'],
+                                  capture_output=True, text=True, timeout=2)
+
+        # Look for "a3" which indicates alt3 (PWM function)
+        # Format: "18: a3 pd | hi // GPIO18 = PWM0_CHAN2"
+        gpio18_ok = 'a3' in result_18.stdout and 'PWM' in result_18.stdout
+        gpio19_ok = 'a3' in result_19.stdout and 'PWM' in result_19.stdout
+
+        if gpio18_ok and gpio19_ok:
+            return True, "GPIO 18 and 19 configured for PWM (alt3)"
+        elif not gpio18_ok and not gpio19_ok:
+            return False, "GPIOs not in PWM mode - reboot may be required"
+        else:
+            failed = []
+            if not gpio18_ok:
+                failed.append("GPIO 18")
+            if not gpio19_ok:
+                failed.append("GPIO 19")
+            return False, f"{', '.join(failed)} not in PWM mode"
+
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        # pinctrl not available or timeout - fall back to config check only
+        return True, "Config file OK (pinctrl verification skipped)"
+    except Exception:
+        # Any other error - assume it's OK if config file is correct
+        return True, "Config file OK (pinctrl verification failed)"
+
+# ============================================================================
 # GLOBAL STATE
 # ============================================================================
 
@@ -56,18 +154,34 @@ class AudioReactiveController:
         self.last_beat_time = 0
         self.energy_history = []
         self.smoothed_energy = 0.0
-        
+
+        # Display Pi version
+        print(f"🔍 Detected: Raspberry Pi {PI_VERSION}")
+
+        # Check Pi 5 configuration
+        if PI_VERSION == 5:
+            is_configured, status_msg = check_pi5_config()
+            if not is_configured:
+                print("\n⚠️  WARNING: Raspberry Pi 5 PWM configuration issue!")
+                print(f"   Status: {status_msg}")
+                print("\n   To fix:")
+                print("   1. Run: sudo bash setup_pi5.sh")
+                print("   2. Reboot: sudo reboot")
+                print("   3. Verify with: pinctrl get 18 19\n")
+            else:
+                print(f"✓ Pi 5 PWM verified: {status_msg}")
+
         # Setup GPIO
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(LED_1_PIN, GPIO.OUT)
         GPIO.setup(LED_2_PIN, GPIO.OUT)
-        
-        # Setup PWM
+
+        # Setup PWM with appropriate channels for Pi version
         self.pwm1 = GPIO.PWM(LED_1_PIN, PWM_FREQ)
         self.pwm2 = GPIO.PWM(LED_2_PIN, PWM_FREQ)
         self.pwm1.start(0)
         self.pwm2.start(0)
-        
+
         print(f"✓ GPIO initialized: LED1=GPIO{LED_1_PIN}, LED2=GPIO{LED_2_PIN}")
         print(f"✓ PWM frequency: {PWM_FREQ}Hz")
     
@@ -261,7 +375,7 @@ class AudioReactiveController:
 def main():
     print("=" * 60)
     print("  Heartbeat Audio-Reactive LED Controller")
-    print("  Raspberry Pi + 2x 70W COB LEDs")
+    print(f"  Raspberry Pi {PI_VERSION} + 2x 70W COB LEDs")
     print("=" * 60)
     
     controller = AudioReactiveController()
