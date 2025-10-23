@@ -4,15 +4,34 @@ Real-time audio-reactive lighting using Raspberry Pi and high-power COB LEDs. De
 
 ## Quick Start
 
-**For Raspberry Pi 5 users (one-time setup):**
+**Complete setup (recommended):**
 ```bash
-sudo bash setup_pi5.sh
-sudo reboot
+make install       # Install all dependencies
+make setup-pi5     # Pi 5 only: Configure PWM
+sudo reboot        # Pi 5 only: Reboot required
+
+make setup-gpio    # Setup GPIO permissions (no sudo needed)
+newgrp gpio        # Activate gpio group
+
+make loop          # Start heartbeat (loops forever)
+make stop          # Stop heartbeat
 ```
 
-**For all Raspberry Pi versions:**
+**Manual setup:**
 ```bash
-python3 src/heartbeat.py heartbeat.mp3
+# Install dependencies
+sudo apt-get update
+sudo apt-get install -y python3-pyaudio ffmpeg portaudio19-dev liblgpio-dev swig
+
+# Install Python packages
+pip3 install numpy pydub pyaudio rpi-lgpio audioop-lts
+
+# Pi 5 only: Setup PWM
+sudo bash setup_pi5.sh
+sudo reboot
+
+# Run
+python3 src/heartbeat.py heartbeat.mp3 --loop
 ```
 
 ---
@@ -204,11 +223,16 @@ Edit these in `heartbeat_led.py` to tune performance:
 ### Basic Usage
 
 ```bash
-# Play MP3 with reactive lighting
-python3 heartbeat_led.py heartbeat.mp3
+# Using Makefile (recommended)
+make test          # Test hardware (LEDs cycle through patterns)
+make run           # Play once
+make loop          # Loop forever
+make stop          # Stop running heartbeat
 
-# Run hardware test pattern (verify wiring first!)
-python3 heartbeat_led.py test
+# Direct command
+python3 src/heartbeat.py heartbeat.mp3           # Play once
+python3 src/heartbeat.py heartbeat.mp3 --loop    # Loop forever
+python3 src/heartbeat.py test                    # Hardware test
 ```
 
 ### Test Pattern

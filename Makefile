@@ -1,4 +1,4 @@
-.PHONY: help install install-system install-python setup-pi5 test run loop clean stop
+.PHONY: help install install-system install-python setup-pi5 setup-gpio test run loop clean stop
 
 # Use bash as the shell
 SHELL := /bin/bash
@@ -12,6 +12,7 @@ help:
 	@echo "  make install-system  - Install system dependencies only"
 	@echo "  make install-python  - Install Python dependencies only"
 	@echo "  make setup-pi5       - Setup Raspberry Pi 5 PWM configuration"
+	@echo "  make setup-gpio      - Setup GPIO permissions (run without sudo)"
 	@echo "  make test           - Run hardware test pattern"
 	@echo "  make run            - Run with heartbeat.mp3 (plays once)"
 	@echo "  make loop           - Run with heartbeat.mp3 (repeats forever)"
@@ -107,6 +108,38 @@ setup-pi5:
 	@echo ""
 	@echo "⚠️  REBOOT REQUIRED"
 	@echo "Run: sudo reboot"
+	@echo ""
+
+# =============================================================================
+# GPIO PERMISSIONS SETUP
+# =============================================================================
+# Allows running GPIO without sudo (fixes Bluetooth audio issues)
+# This adds the current user to the gpio group and creates udev rules
+# =============================================================================
+
+setup-gpio:
+	@echo "Setting up GPIO permissions for user: $(USER)"
+	@echo ""
+	@echo "1. Adding $(USER) to gpio group..."
+	sudo usermod -a -G gpio $(USER)
+	@echo ""
+	@echo "2. Creating udev rules for GPIO access..."
+	@sudo bash -c 'cat > /etc/udev/rules.d/99-gpio.rules << EOF\n\
+# Allow gpio group to access GPIO without sudo\n\
+SUBSYSTEM=="gpio*", PROGRAM="/bin/sh -c '\''chown -R root:gpio /sys/class/gpio && chmod -R 770 /sys/class/gpio; chown -R root:gpio /sys/devices/virtual/gpio && chmod -R 770 /sys/devices/virtual/gpio; chown -R root:gpio /sys/devices/platform/soc/*.gpio/gpiochip* && chmod -R 770 /sys/devices/platform/soc/*.gpio/gpiochip*'\''"\n\
+SUBSYSTEM=="gpiomem", GROUP="gpio", MODE="0660"\n\
+KERNEL=="gpiomem", GROUP="gpio", MODE="0660"\n\
+EOF'
+	@echo ""
+	@echo "3. Reloading udev rules..."
+	sudo udevadm control --reload-rules
+	sudo udevadm trigger
+	@echo ""
+	@echo "✓ GPIO permissions configured!"
+	@echo ""
+	@echo "⚠️  LOGOUT REQUIRED"
+	@echo "You need to logout and login again for group changes to take effect"
+	@echo "Or run: newgrp gpio"
 	@echo ""
 
 # =============================================================================
