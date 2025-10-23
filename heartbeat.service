@@ -19,5 +19,14 @@ StandardError=journal
 # Make sure we have access to audio and GPIO
 SupplementaryGroups=audio video gpio bluetooth pulse-access
 
+# Realtime priority settings for smooth audio/LED performance
+Nice=-15
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+LimitRTPRIO=95
+LimitMEMLOCK=512M
+
 [Install]
 WantedBy=multi-user.target

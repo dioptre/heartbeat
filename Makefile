@@ -1,4 +1,4 @@
-.PHONY: help install install-system install-python setup-pi5 setup-gpio setup-audio-aux test run loop clean stop service-install service-start service-stop service-status service-enable service-disable service-logs service-uninstall
+.PHONY: help install install-system install-python setup-pi5 setup-gpio setup-audio-aux setup-audio-fix setup-realtime setup-cpu-performance setup-headless enable-desktop verify test run loop clean stop service-install service-start service-stop service-status service-enable service-disable service-logs service-uninstall
 
 # Use bash as the shell
 SHELL := /bin/bash
@@ -14,6 +14,12 @@ help:
 	@echo "  make setup-pi5       - Setup Raspberry Pi 5 PWM configuration"
 	@echo "  make setup-gpio      - Setup GPIO permissions (run without sudo)"
 	@echo "  make setup-audio-aux - Set audio output to 3.5mm AUX jack (Pi 4)"
+	@echo "  make setup-audio-fix - Fix audio crackling/distortion (PipeWire)"
+	@echo "  make setup-realtime  - Setup realtime priority for smooth audio"
+	@echo "  make setup-cpu-performance - Set CPU to performance mode"
+	@echo "  make setup-headless  - Disable desktop (saves ~10-15% CPU)"
+	@echo "  make enable-desktop  - Re-enable graphical desktop"
+	@echo "  make verify          - Verify system configuration (Pi 4/Pi 5)"
 	@echo "  make test           - Run hardware test pattern"
 	@echo "  make run            - Run with heartbeat.mp3 (plays once)"
 	@echo "  make loop           - Run with heartbeat.mp3 (repeats forever)"
@@ -138,6 +144,72 @@ setup-audio-aux:
 	@echo ""
 
 # =============================================================================
+# AUDIO CRACKLING/DISTORTION FIX
+# =============================================================================
+# Fixes audio crackling by increasing PipeWire buffer size
+# Default: 256/48000 (~5.3ms latency)
+# For severe issues: make setup-audio-fix-512 (512/48000 = ~10.6ms)
+# Based on: https://www.ifixit.com/Guide/Ubuntu+Linux+Fixing+Crackling-Glitching+Audio/187324
+# =============================================================================
+
+setup-audio-fix:
+	@echo "Fixing audio crackling (buffer: 256/48000)..."
+	@bash fix_audio_crackling.sh 256
+	@echo ""
+	@echo "If crackling persists, try: make setup-audio-fix-512"
+	@echo ""
+
+setup-audio-fix-512:
+	@echo "Fixing audio crackling (buffer: 512/48000)..."
+	@bash fix_audio_crackling.sh 512
+	@echo ""
+
+setup-audio-restore:
+	@echo "Restoring original PipeWire configuration..."
+	@sudo cp /usr/share/pipewire/pipewire-pulse.conf.backup /usr/share/pipewire/pipewire-pulse.conf
+	@systemctl --user restart pipewire pipewire-pulse wireplumber
+	@echo "✓ Original configuration restored"
+	@echo ""
+
+# =============================================================================
+# REALTIME PRIORITY SETUP
+# =============================================================================
+# Configures system for realtime audio processing with low latency
+# Sets up: realtime limits, CPU governor, nice priority
+# =============================================================================
+
+setup-realtime:
+	@echo "Setting up realtime audio priority..."
+	@bash setup_realtime_audio.sh
+	@echo ""
+	@echo "✓ Realtime setup complete"
+	@echo "If service is running: make service-restart"
+	@echo "Or apply to running process: sudo renice -n -15 -p \$$(pgrep -f heartbeat.py)"
+	@echo ""
+
+setup-cpu-performance:
+	@echo "Setting CPU governor to performance mode..."
+	@bash set_cpu_performance.sh
+	@echo "✓ CPU set to performance mode (reduces audio crackling)"
+	@echo ""
+
+# =============================================================================
+# HEADLESS MODE (NO DESKTOP)
+# =============================================================================
+# Disables graphical desktop environment to save CPU and memory
+# Saves: ~10-15% CPU, ~200-300MB RAM
+# You can still SSH in and run the heartbeat service
+# =============================================================================
+
+setup-headless:
+	@echo "Configuring headless mode (no desktop)..."
+	@bash setup_headless_mode.sh
+
+enable-desktop:
+	@echo "Re-enabling desktop mode..."
+	@bash enable_desktop_mode.sh
+
+# =============================================================================
 # GPIO PERMISSIONS SETUP
 # =============================================================================
 # Allows running GPIO without sudo (fixes Bluetooth audio issues)
@@ -170,6 +242,17 @@ EOF'
 	@echo ""
 
 # =============================================================================
+# VERIFICATION
+# =============================================================================
+# Comprehensive system check for Pi 4 and Pi 5
+# Verifies: Pi model, PWM config, GPIO permissions, audio, Python packages
+# =============================================================================
+
+verify:
+	@echo "Verifying system configuration..."
+	@bash verify_setup.sh
+
+# =============================================================================
 # RUNNING THE PROJECT
 # =============================================================================
 
@@ -182,6 +265,12 @@ run:
 		echo "❌ Error: heartbeat.mp3 not found"; \
 		exit 1; \
 	fi
+	@echo "Applying audio optimizations..."
+	@bash set_cpu_performance.sh 2>/dev/null || echo "⚠ CPU performance mode not set (may need sudo)"
+	@if pgrep -x "python3" > /dev/null 2>&1; then \
+		sudo renice -n -15 -p $$(pgrep -f heartbeat.py) 2>/dev/null || true; \
+	fi
+	@echo "Starting heartbeat (single play)..."
 	source .venv/bin/activate && python3 src/heartbeat.py heartbeat.mp3
 
 loop:
@@ -189,9 +278,18 @@ loop:
 		echo "❌ Error: heartbeat.mp3 not found"; \
 		exit 1; \
 	fi
+	@echo "Applying audio optimizations..."
+	@bash set_cpu_performance.sh 2>/dev/null || echo "⚠ CPU performance mode not set (may need sudo)"
+	@echo ""
 	@echo "Starting heartbeat in loop mode (repeats forever)..."
 	@echo "Press Ctrl+C to stop, or run 'make stop' from another terminal"
-	source .venv/bin/activate && python3 src/heartbeat.py heartbeat.mp3 --loop
+	@echo ""
+	@(source .venv/bin/activate && python3 src/heartbeat.py heartbeat.mp3 --loop) & \
+	sleep 2 && \
+	if pgrep -f "heartbeat.py" > /dev/null; then \
+		sudo renice -n -15 -p $$(pgrep -f heartbeat.py) 2>/dev/null && echo "✓ Applied nice priority -15" || echo "⚠ Could not set nice priority (may need sudo)"; \
+	fi; \
+	wait
 
 stop:
 	@echo "Stopping heartbeat..."
