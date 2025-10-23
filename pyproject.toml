@@ -1,0 +1,51 @@
+[project]
+name = "heartbeat"
+version = "0.1.0"
+description = "Real-time audio-reactive lighting using Raspberry Pi and high-power COB LEDs"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    {name = "heartbeat", email = "noreply@example.com"}
+]
+keywords = ["raspberry-pi", "led", "audio", "pwm", "gpio", "audio-reactive"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: System :: Hardware",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "pydub>=0.25.1",
+    "pyaudio>=0.2.13",
+    "rpi-lgpio>=0.4",
+    "audioop-lts>=0.2.1; python_version >= '3.13'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+heartbeat = "heartbeat:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312", "py313"]
