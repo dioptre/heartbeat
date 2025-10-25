@@ -214,16 +214,23 @@ class AudioReactiveController:
 
         return self.smoothed_energy
     
-    def detect_beat(self, energy):
+    def detect_beat(self, energy, current_timestamp=None):
         """
         Detect if current energy represents a beat/heartbeat
         Uses adaptive threshold based on recent energy history
+        Args:
+            energy: Current energy level (0-1)
+            current_timestamp: Optional timestamp in seconds (for preprocessing)
+                              If None, uses actual wall clock time
         """
-        current_time = time.time()
+        if current_timestamp is None:
+            current_time = time.time()
+        else:
+            current_time = current_timestamp
 
-        # Update energy history (keep last 50 samples)
+        # Update energy history (keep last 30 samples ~0.69s for faster tempo adaptation)
         self.energy_history.append(energy)
-        if len(self.energy_history) > 50:
+        if len(self.energy_history) > 30:
             self.energy_history.pop(0)
 
         # Use median instead of mean for more robust detection
@@ -233,7 +240,7 @@ class AudioReactiveController:
             # Beat detected if:
             # 1. Energy significantly exceeds recent median
             # 2. Enough time passed since last beat
-            # 3. Energy is above 70% of the known maximum (if analyzed)
+            # 3. Energy is above 50% of the known maximum (if analyzed)
             threshold_met = energy > median_energy * BEAT_THRESHOLD
 
             if hasattr(self, 'audio_max_energy'):
@@ -295,12 +302,101 @@ class AudioReactiveController:
         self.pwm1.ChangeDutyCycle(self.brightness_1)
         self.pwm2.ChangeDutyCycle(self.brightness_2)
     
-    def process_mp3_file(self, mp3_path, loop=False):
+    def preprocess_audio(self, raw_data):
         """
-        Load and process MP3 file for audio-reactive control
+        Pre-analyze entire audio file to create timeline of LED states
+        Returns: list of (timestamp, energy, is_beat) tuples
+        """
+        print(f"🔍 Pre-analyzing audio to create LED timeline...")
+
+        bytes_per_chunk = CHUNK_SIZE * 2  # 16-bit = 2 bytes per sample
+        timeline = []
+        energies = []
+
+        # Reset state for analysis
+        self.energy_history = []
+        self.smoothed_energy = 0.0
+        self.last_beat_time = 0
+
+        # First pass: collect all energies to find min/max
+        print(f"   Pass 1/2: Analyzing energy levels...")
+        for i in range(0, len(raw_data), bytes_per_chunk):
+            chunk = raw_data[i:i+bytes_per_chunk]
+            if len(chunk) < bytes_per_chunk:
+                break
+
+            energy = self.analyze_audio_chunk(chunk)
+            energies.append(energy)
+
+        # Find peak and minimum energy (using percentiles to avoid outliers)
+        self.audio_min_energy = np.percentile(energies, 5)   # 5th percentile
+        self.audio_max_energy = np.percentile(energies, 95)  # 95th percentile
+
+        print(f"   ✓ Audio range: {self.audio_min_energy:.3f} to {self.audio_max_energy:.3f}")
+
+        # Second pass: detect beats and create timeline
+        print(f"   Pass 2/2: Detecting beats and building timeline...")
+        self.energy_history = []
+        self.smoothed_energy = 0.0
+        self.last_beat_time = 0
+
+        chunk_index = 0
+        for i in range(0, len(raw_data), bytes_per_chunk):
+            chunk = raw_data[i:i+bytes_per_chunk]
+            if len(chunk) < bytes_per_chunk:
+                break
+
+            # Calculate timestamp for this chunk
+            timestamp = chunk_index * CHUNK_SIZE / SAMPLE_RATE
+
+            # Get pre-computed energy from first pass
+            raw_energy = energies[chunk_index]
+
+            # Apply smoothing (same as real-time processing)
+            self.smoothed_energy = (SMOOTHING_FACTOR * self.smoothed_energy +
+                                   (1 - SMOOTHING_FACTOR) * raw_energy)
+
+            # Detect beat using timestamp (not wall clock time)
+            is_beat = self.detect_beat(self.smoothed_energy, current_timestamp=timestamp)
+
+            # Store in timeline (use smoothed energy for consistency)
+            timeline.append((timestamp, self.smoothed_energy, is_beat))
+
+            chunk_index += 1
+
+        print(f"   ✓ Timeline created: {len(timeline)} frames over {timeline[-1][0]:.1f}s")
+        beat_count = sum(1 for _, _, is_beat in timeline if is_beat)
+        print(f"   ✓ Detected {beat_count} beats (~{beat_count / (timeline[-1][0] / 60):.0f} BPM)")
+
+        return timeline
+
+    def wait_until_safe(self, target_time):
+        """
+        Wait until target time without starving audio thread.
+        Uses adaptive sleep + minimal busy-wait for precision without audio clipping.
+        """
+        while True:
+            remaining = target_time - time.perf_counter()
+
+            if remaining <= 0:
+                break
+            elif remaining > 0.010:
+                # Sleep for bulk of time (releases CPU to audio thread)
+                time.sleep(remaining - 0.005)
+            elif remaining > 0.001:
+                # Small sleep to yield to other threads
+                time.sleep(0.0001)  # 100μs
+            else:
+                # Final sub-millisecond - quick pass (not a busy loop)
+                pass
+
+    def process_mp3_file(self, mp3_path, loop=False, latency_offset=0.0):
+        """
+        Load and process MP3 file for audio-reactive control with drift-free timing.
         Args:
             mp3_path: Path to MP3 file
             loop: If True, repeat audio forever
+            latency_offset: Manual latency compensation in seconds (positive = LEDs earlier)
         """
         print(f"\n🎵 Loading: {mp3_path}")
 
@@ -316,84 +412,62 @@ class AudioReactiveController:
         print(f"✓ Duration: {len(audio)/1000:.1f}s")
         print(f"✓ Sample rate: {audio.frame_rate}Hz")
 
-        # Pre-analyze audio to find peak and minimum energy levels
-        print(f"🔍 Analyzing audio for dynamic range...")
-        bytes_per_chunk = CHUNK_SIZE * 2  # 16-bit = 2 bytes per sample
-        energies = []
+        # Pre-process entire audio to create LED timeline
+        timeline = self.preprocess_audio(raw_data)
 
-        for i in range(0, len(raw_data), bytes_per_chunk):
-            chunk = raw_data[i:i+bytes_per_chunk]
-            if len(chunk) < bytes_per_chunk:
-                break
-
-            # Calculate RMS energy for this chunk
-            audio_array = np.frombuffer(chunk, dtype=np.int16)
-            if len(audio_array) > 0:
-                audio_float = audio_array.astype(np.float64)
-                mean_square = np.mean(audio_float ** 2)
-                if mean_square >= 0 and not np.isnan(mean_square):
-                    rms = np.sqrt(mean_square)
-                    normalized_energy = min(rms / 10000.0, 1.0)
-                    energies.append(normalized_energy)
-
-        # Find peak and minimum energy (using percentiles to avoid outliers)
-        self.audio_min_energy = np.percentile(energies, 5)   # 5th percentile
-        self.audio_max_energy = np.percentile(energies, 95)  # 95th percentile
-
-        print(f"✓ Audio range: {self.audio_min_energy:.3f} to {self.audio_max_energy:.3f}")
         print(f"✓ Will map to LED range: 40% to 97%")
-        print(f"✓ Starting audio-reactive control...")
-        print(f"  - Chunk size: {CHUNK_SIZE} samples (~{CHUNK_SIZE/SAMPLE_RATE*1000:.1f}ms latency)")
+        print(f"✓ Starting drift-free synchronized playback...")
+        print(f"  - Update rate: ~{CHUNK_SIZE/SAMPLE_RATE*1000:.1f}ms per frame")
         print(f"  - Beat threshold: {BEAT_THRESHOLD}x average")
+        if latency_offset != 0:
+            print(f"  - Latency offset: {latency_offset*1000:.1f}ms")
         if loop:
             print(f"  - Loop mode: ENABLED (will repeat forever)")
         print("\nPress Ctrl+C to stop\n")
 
         # Process audio in chunks
         self.running = True
-        bytes_per_chunk = CHUNK_SIZE * 2  # 16-bit = 2 bytes per sample
 
         try:
             loop_count = 0
             while True:
+                loop_count += 1
+                if loop and loop_count > 1:
+                    print(f"\n🔄 Loop #{loop_count} starting...")
+
                 # Start playback in separate thread for this loop iteration
                 playback_thread = threading.Thread(target=lambda: play(audio))
                 playback_thread.daemon = True
+
+                # Capture absolute start time BEFORE starting playback
+                start_time = time.perf_counter()
                 playback_thread.start()
 
-                if loop:
-                    loop_count += 1
-                    if loop_count > 1:
-                        print(f"\n🔄 Loop #{loop_count} starting...")
+                # Apply latency offset to start time
+                adjusted_start_time = start_time - latency_offset
 
-                for i in range(0, len(raw_data), bytes_per_chunk):
+                # Play through pre-computed timeline with absolute timing
+                for frame_index, (timestamp, energy, is_beat) in enumerate(timeline):
                     if not self.running:
                         break
 
-                    chunk = raw_data[i:i+bytes_per_chunk]
+                    # Calculate absolute target time (no accumulation!)
+                    target_time = adjusted_start_time + timestamp
 
-                    if len(chunk) < bytes_per_chunk:
-                        break
+                    # Wait until exact timestamp (drift-free)
+                    self.wait_until_safe(target_time)
 
-                    # Analyze audio
-                    energy = self.analyze_audio_chunk(chunk)
-                    is_beat = self.detect_beat(energy)
-
-                    # Update LEDs
+                    # Update LEDs based on pre-computed values
                     self.update_leds(energy, is_beat)
 
                     # Debug output - show every 50th frame or if beat detected
                     if is_beat:
-                        print(f"💓 BEAT! Energy: {energy:.3f} | Brightness: {self.brightness_1:.0f}%")
-                    elif i % (bytes_per_chunk * 50) == 0:
+                        print(f"💓 BEAT! Time: {timestamp:.2f}s | Energy: {energy:.3f} | Brightness: {self.brightness_1:.0f}%")
+                    elif frame_index % 50 == 0:
                         # Show status every ~1 second
                         median = np.median(self.energy_history) if len(self.energy_history) > 0 else 0
                         threshold = median * BEAT_THRESHOLD
-                        max_e = self.audio_max_energy if hasattr(self, 'audio_max_energy') else 1.0
-                        print(f"   Energy: {energy:.3f} | Median: {median:.3f} | Threshold: {threshold:.3f} | Max: {max_e:.3f} | Brightness: {self.brightness_1:.0f}%")
-
-                    # Timing sync (simulate real-time playback)
-                    time.sleep(CHUNK_SIZE / SAMPLE_RATE)
+                        print(f"   Time: {timestamp:.1f}s | Energy: {energy:.3f} | Threshold: {threshold:.3f} | Brightness: {self.brightness_1:.0f}%")
 
                 # Wait for playback to finish
                 playback_thread.join()
@@ -404,7 +478,7 @@ class AudioReactiveController:
 
         except KeyboardInterrupt:
             print("\n\n⏹  Stopped by user")
-        
+
         finally:
             # Fade out
             print("Fading out...")
@@ -512,13 +586,13 @@ def main():
     print("  Heartbeat Audio-Reactive LED Controller")
     print(f"  Raspberry Pi {PI_VERSION} + 2x 70W COB LEDs")
     print("=" * 60)
-    
+
     controller = AudioReactiveController()
-    
+
     try:
         # Check for MP3 file argument
         import sys
-        
+
         if len(sys.argv) > 1:
             arg = sys.argv[1]
 
@@ -530,22 +604,37 @@ def main():
             # Check for loop flag
             loop_mode = '--loop' in sys.argv or '-l' in sys.argv
 
+            # Check for latency offset flag
+            latency_offset = 0.0
+            for i, arg_item in enumerate(sys.argv):
+                if arg_item == '--offset' and i + 1 < len(sys.argv):
+                    try:
+                        latency_offset = float(sys.argv[i + 1])
+                    except ValueError:
+                        print(f"⚠️  Warning: Invalid offset value '{sys.argv[i + 1]}', using 0")
+                        latency_offset = 0.0
+                    break
+
             # Otherwise treat as MP3 file path
             mp3_path = arg
             if not Path(mp3_path).exists():
                 print(f"❌ Error: File not found: {mp3_path}")
                 return
 
-            controller.process_mp3_file(mp3_path, loop=loop_mode)
+            controller.process_mp3_file(mp3_path, loop=loop_mode, latency_offset=latency_offset)
         else:
             print("\nUsage:")
-            print("  python3 heartbeat_led.py <mp3_file> [--loop]")
+            print("  python3 heartbeat_led.py <mp3_file> [options]")
             print("\nOptions:")
-            print("  --loop, -l    Repeat audio forever")
+            print("  --loop, -l           Repeat audio forever")
+            print("  --offset <seconds>   Latency compensation in seconds (can be negative)")
+            print("                       Examples:")
+            print("                         --offset 0.02   (LEDs 20ms earlier)")
+            print("                         --offset -0.03  (LEDs 30ms later)")
             print("\nOr run test pattern:")
             print("  python3 heartbeat_led.py test")
             print()
-            
+
             # Offer test pattern
             choice = input("Run test pattern? (y/n): ").lower()
             if choice == 'y':
