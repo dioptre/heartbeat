@@ -76,10 +76,10 @@ MIN_BRIGHTNESS = 0
 # Audio analysis settings
 SAMPLE_RATE = 44100
 CHUNK_SIZE = 1024  # Smaller = lower latency (~23ms)
-SMOOTHING_FACTOR = 0.7  # 0-1, higher = smoother but slower response
+SMOOTHING_FACTOR = 0.75  # 0-1, higher = smoother but slower response
 
 # Heartbeat detection
-BEAT_THRESHOLD = 1.15  # Multiplier above average for beat detection (very sensitive)
+BEAT_THRESHOLD = 1.10  # Multiplier above average for beat detection (very sensitive)
 BEAT_DECAY = 0.88  # How fast brightness decays after beat (faster for more visible beats)
 MIN_BEAT_INTERVAL = 0.25  # Minimum seconds between beats (max 240 BPM)
 

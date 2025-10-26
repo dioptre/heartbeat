@@ -284,7 +284,7 @@ loop:
 	@echo "Starting heartbeat in loop mode (repeats forever)..."
 	@echo "Press Ctrl+C to stop, or run 'make stop' from another terminal"
 	@echo ""
-	@(source .venv/bin/activate && python3 src/heartbeat.py heartbeat.mp3 --loop) & \
+	@(source .venv/bin/activate && python3 src/heartbeat.py heartbeat.mp3 --loop --offset -0.75) & \
 	sleep 2 && \
 	if pgrep -f "heartbeat.py" > /dev/null; then \
 		sudo renice -n -15 -p $$(pgrep -f heartbeat.py) 2>/dev/null && echo "✓ Applied nice priority -15" || echo "⚠ Could not set nice priority (may need sudo)"; \

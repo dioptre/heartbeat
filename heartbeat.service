@@ -10,7 +10,7 @@ Group=a
 WorkingDirectory=/home/a/heartbeat
 Environment="PATH=/home/a/heartbeat/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PULSE_RUNTIME_PATH=/run/user/1000/pulse/"
-ExecStart=/home/a/heartbeat/.venv/bin/python3 /home/a/heartbeat/src/heartbeat.py /home/a/heartbeat/heartbeat.mp3 --loop
+ExecStart=/home/a/heartbeat/.venv/bin/python3 /home/a/heartbeat/src/heartbeat.py /home/a/heartbeat/heartbeat.mp3 --loop --offset -0.75
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
